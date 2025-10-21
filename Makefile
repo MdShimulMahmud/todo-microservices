@@ -24,15 +24,9 @@ help:
 	@echo "  push-<service>  Push a single service image"
 	@echo "  gen-mongo-uri   Print PowerShell command to generate base64 MongoDB URI"
 
-build-all:
-	@for s in $(SERVICES); do \
-		$(MAKE) build-$$s; \
-	done
+build-all: $(addprefix build-,$(SERVICES))
 
-push-all:
-	@for s in $(SERVICES); do \
-		$(MAKE) push-$$s; \
-	done
+push-all: $(addprefix push-,$(SERVICES))
 
 login:
 	@$(DOCKER) login
@@ -47,13 +41,11 @@ gen-mongo-uri:
 clean:
 	@echo "No-op: remove local images manually if desired"
 
-# Per-service build/push rules
-$(foreach svc,$(SERVICES),$(eval 
-build-$(svc):
-	@echo "Building $(svc) -> $(REGISTRY)/$(svc):$(TAG)"
-	@$(DOCKER) build -t $(REGISTRY)/$(svc):$(TAG) -f $(svc)/Dockerfile .
+# Per-service build/push rules (pattern rules)
+build-%:
+	@echo "Building $* -> $(REGISTRY)/$*:$(TAG)"
+	@$(DOCKER) build -t $(REGISTRY)/$*:$(TAG) -f $*/Dockerfile .
 
-push-$(svc):
-	@echo "Pushing $(svc) -> $(REGISTRY)/$(svc):$(TAG)"
-	@$(DOCKER) push $(REGISTRY)/$(svc):$(TAG)
-))
+push-%:
+	@echo "Pushing $* -> $(REGISTRY)/$*:$(TAG)"
+	@$(DOCKER) push $(REGISTRY)/$*:$(TAG)
