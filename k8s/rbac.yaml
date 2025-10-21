@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: noop-rbac
+  namespace: todo-app
+data:
+  note: "original RBAC removed per user request"

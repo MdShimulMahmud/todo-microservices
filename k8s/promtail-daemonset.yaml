@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: todo-app
+  labels:
+    app: promtail
+spec:
+  selector:
+    matchLabels:
+      name: promtail
+  template:
+    metadata:
+      labels:
+        name: promtail
+    spec:
+      serviceAccountName: todo-app-sa
+      tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "todo"
+        effect: "NoSchedule"
+      containers:
+      - name: promtail
+        image: grafana/promtail:2.7.0
+        args:
+        - -config.file=/etc/promtail/promtail.yaml
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: promtail-config
+          mountPath: /etc/promtail
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdocker
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+      volumes:
+      - name: promtail-config
+        configMap:
+          name: promtail-config
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdocker
+        hostPath:
+          path: /var/lib/docker/containers

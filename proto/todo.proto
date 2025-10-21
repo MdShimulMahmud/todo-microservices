@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package todo;
+
+option go_package = "github.com/technonext/todo-app/proto";
+
+// Task service definition
+service TaskService {
+  rpc CreateTask (CreateTaskRequest) returns (TaskResponse);
+  rpc GetTask (GetTaskRequest) returns (TaskResponse);
+  rpc UpdateTask (UpdateTaskRequest) returns (TaskResponse);
+  rpc DeleteTask (DeleteTaskRequest) returns (DeleteTaskResponse);
+  rpc ListTasks (ListTasksRequest) returns (ListTasksResponse);
+}
+
+// User service definition
+service UserService {
+  rpc CreateUser (CreateUserRequest) returns (UserResponse);
+  rpc GetUser (GetUserRequest) returns (UserResponse);
+  rpc UpdateUser (UpdateUserRequest) returns (UserResponse);
+  rpc DeleteUser (DeleteUserRequest) returns (DeleteUserResponse);
+  rpc AuthenticateUser (AuthRequest) returns (AuthResponse);
+}
+
+// Notification service definition
+service NotificationService {
+  rpc SendNotification (NotificationRequest) returns (NotificationResponse);
+  rpc GetNotifications (GetNotificationsRequest) returns (GetNotificationsResponse);
+}
+
+// Analytics service definition
+service AnalyticsService {
+  rpc TrackEvent (TrackEventRequest) returns (TrackEventResponse);
+  rpc GetUserStats (GetUserStatsRequest) returns (GetUserStatsResponse);
+  rpc GetTaskStats (GetTaskStatsRequest) returns (GetTaskStatsResponse);
+}
+
+// Task messages
+message Task {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string user_id = 4;
+  bool completed = 5;
+  string due_date = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message CreateTaskRequest {
+  string title = 1;
+  string description = 2;
+  string user_id = 3;
+  string due_date = 4;
+}
+
+message GetTaskRequest {
+  string id = 1;
+}
+
+message UpdateTaskRequest {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  bool completed = 4;
+  string due_date = 5;
+}
+
+message DeleteTaskRequest {
+  string id = 1;
+}
+
+message DeleteTaskResponse {
+  bool success = 1;
+}
+
+message ListTasksRequest {
+  string user_id = 1;
+  bool completed = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  int32 total = 2;
+}
+
+message TaskResponse {
+  Task task = 1;
+}
+
+// User messages
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message CreateUserRequest {
+  string username = 1;
+  string email = 2;
+  string password = 3;
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message UpdateUserRequest {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  string password = 4;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+}
+
+message DeleteUserResponse {
+  bool success = 1;
+}
+
+message UserResponse {
+  User user = 1;
+}
+
+message AuthRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message AuthResponse {
+  string token = 1;
+  User user = 2;
+}
+
+// Notification messages
+message Notification {
+  string id = 1;
+  string user_id = 2;
+  string message = 3;
+  bool read = 4;
+  string created_at = 5;
+}
+
+message NotificationRequest {
+  string user_id = 1;
+  string message = 2;
+}
+
+message NotificationResponse {
+  Notification notification = 1;
+}
+
+message GetNotificationsRequest {
+  string user_id = 1;
+  bool unread_only = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}
+
+message GetNotificationsResponse {
+  repeated Notification notifications = 1;
+  int32 total = 2;
+}
+
+// Analytics messages
+message Event {
+  string id = 1;
+  string user_id = 2;
+  string event_type = 3;
+  string resource_id = 4;
+  string metadata = 5;
+  string created_at = 6;
+}
+
+message TrackEventRequest {
+  string user_id = 1;
+  string event_type = 2;
+  string resource_id = 3;
+  string metadata = 4;
+}
+
+message TrackEventResponse {
+  Event event = 1;
+}
+
+message GetUserStatsRequest {
+  string user_id = 1;
+  string start_date = 2;
+  string end_date = 3;
+}
+
+message UserStats {
+  int32 total_tasks = 1;
+  int32 completed_tasks = 2;
+  int32 pending_tasks = 3;
+  int32 overdue_tasks = 4;
+}
+
+message GetUserStatsResponse {
+  UserStats stats = 1;
+}
+
+message GetTaskStatsRequest {
+  string start_date = 1;
+  string end_date = 2;
+}
+
+message TaskStats {
+  int32 total_tasks = 1;
+  int32 completed_tasks = 2;
+  int32 active_users = 3;
+}
+
+message GetTaskStatsResponse {
+  TaskStats stats = 1;
+}

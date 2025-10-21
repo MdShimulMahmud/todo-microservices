@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: todo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      serviceAccountName: todo-app-sa
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: notification-service
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: notification-service
+        image: shimulmahmud/notification-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 50053
+        livenessProbe:
+          tcpSocket:
+            port: 50053
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+        readinessProbe:
+          tcpSocket:
+            port: 50053
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        env:
+        - name: MONGODB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: username
+        - name: MONGODB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: password
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: uri
+        - name: PORT
+          value: "50053"
+        resources:
+          limits:
+            cpu: "0.5"
+            memory: "512Mi"
+          requests:
+            cpu: "0.2"
+            memory: "256Mi"
+        volumeMounts:
+        - name: app-storage
+          mountPath: /data
+      - name: envoy
+        image: envoyproxy/envoy:v1.22.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9901
+          name: admin
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: envoy-config
+          mountPath: /etc/envoy
+        livenessProbe:
+          httpGet:
+            scheme: HTTP
+            path: "/ready"
+            port: 9901
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            scheme: HTTP
+            path: "/ready"
+            port: 9901
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+      nodeSelector:
+        kubernetes.io/role: worker
+      tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "todo"
+        effect: "NoSchedule"
+      volumes:
+      - name: envoy-config
+        configMap:
+          name: envoy-config
+      - name: app-storage
+        persistentVolumeClaim:
+          claimName: app-storage-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: todo-app
+spec:
+  selector:
+    app: notification-service
+  ports:
+  - port: 50053
+    targetPort: 50053
+  type: ClusterIP
