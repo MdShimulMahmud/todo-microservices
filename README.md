@@ -1,214 +1,409 @@
-# TO-DO Application with Microservices
+# TODO Application — Tasks & Implementation Guide (Q-1)
 
-A scalable, cloud-native TO-DO application built with microservices architecture using gRPC for internal communication and REST APIs for external clients.
+This README implements Q-1: step-by-step guidance to provision a Kubernetes cluster (1 control-plane + 2 workers), build optimized Docker images for a 5-service TODO app, deploy the app and MongoDB with PV/PVC and constraints, and add logging/APM and monitoring with retention and alerts.
 
-## Architecture Overview
-
-# TO-DO Application with Microservices
-
-This repository contains a small microservices-based TO-DO application implemented in Go. Services communicate internally via gRPC and expose an HTTP API through an API Gateway. The project includes Kubernetes manifests (in `k8s/`) to deploy the application, MongoDB, and a basic observability stack (Prometheus, Grafana, Loki, Tempo).
+This guide uses kind and Helm for reproducibility. Replace with cloud provider tools (eksctl/gcloud/aksctl/kops) as needed.
 
 ---
 
-# Quick status — compatibility
+## Tasks overview
 
-- Dockerfiles in each service use multi-stage Go builds and produce small, non-root runtime images (distroless/static:nonroot). They expose the ports used by the manifests and provide runtime-config via environment variables. Images no longer bake service addresses or database URIs — those are provided by Kubernetes at deploy time via Secrets and ConfigMaps.
-
-Important: The k8s manifests in `k8s/` have been updated to reference images under your Docker Hub username `shimulmahmud` (for the microservices). Before deploying, build and push the images below (or edit the manifests to point to your registry of choice):
-
-Services and expected image names:
-- shimulmahmud/api-gateway:latest
-- shimulmahmud/task-service:latest
-- shimulmahmud/user-service:latest
-- shimulmahmud/notification-service:latest
-- shimulmahmud/analytics-service:latest
+- Task 1: Provision a Kubernetes cluster and create PV/PVC; view CPU & memory metrics in Grafana.
+- Task 2: Create, optimize, and push Docker images for the 5 microservices (gRPC + REST endpoints).
+- Task 3: Deploy the application in Kubernetes meeting constraints (2 nodes, MongoDB StatefulSet, Secrets, taint/toleration, Envoy sidecar, resource requests/limits, fixed scaling, 2Gi storage)
+- Task 4: Logging & APM (Grafana Loki + Tempo), 2 day retention, and monitoring (Prometheus + Grafana + alerts)
 
 ---
 
-## Architecture overview
+## Task 1 — Provision a Kubernetes cluster (kind example)
 
-- Task Service (gRPC) — port 50051
-- User Service (gRPC) — port 50052
-- Notification Service (gRPC) — port 50053
-- Analytics Service (gRPC) — port 50054
-- API Gateway (HTTP) — port 8080
-- MongoDB (StatefulSet + PVC)
-- Envoy: configured as a sidecar in `task-service` for service-to-service communication
-- Observability: Prometheus, Grafana, Loki (logs), Tempo (traces)
+1) Install Docker, kind, kubectl, and helm.
 
----
+2) Create a kind config `kind-cluster.yaml` for 1 control-plane and 2 workers:
 
-## Prerequisites
-
-- Docker (to build images)
-- Kubernetes cluster (minikube / kind / a cloud cluster)
-- kubectl configured to target the cluster
-- If images are pushed to a private registry, you need credentials (imagePullSecrets)
-
----
-
-## Build & publish images (PowerShell examples)
-
-Build locally and push to Docker Hub (images expected by the manifests are listed above). Replace `shimulmahmud` with your registry prefix if different.
-
-```pwsh
-# Build
-docker build -t shimulmahmud/task-service:latest -f task-service/Dockerfile ./
-docker build -t shimulmahmud/user-service:latest -f user-service/Dockerfile ./
-docker build -t shimulmahmud/notification-service:latest -f notification-service/Dockerfile ./
-docker build -t shimulmahmud/analytics-service:latest -f analytics-service/Dockerfile ./
-docker build -t shimulmahmud/api-gateway:latest -f api-gateway/Dockerfile ./
-
-# Push (after docker login)
-docker push shimulmahmud/task-service:latest
-docker push shimulmahmud/user-service:latest
-docker push shimulmahmud/notification-service:latest
-docker push shimulmahmud/analytics-service:latest
-docker push shimulmahmud/api-gateway:latest
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
 ```
+
+Create the cluster:
+
+```bash
+kind create cluster --config kind-cluster.yaml --name todo-cluster
+kubectl cluster-info --context kind-todo-cluster
+```
+
+3) Provision storage (local-path provisioner recommended for kind):
+
+```bash
+helm repo add rancher-local-path https://rancher.github.io/local-path-provisioner
+helm repo update
+helm upgrade --install local-path-storage rancher-local-path/local-path-provisioner --namespace local-path-storage --create-namespace
+kubectl patch storageclass standard -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+```
+
+4) Verify nodes and storage:
+
+```bash
+kubectl get nodes
+kubectl get sc
+```
+
+---
+
+## Task 2 — Optimize Docker images and push to Docker Hub
+
+Use a multi-stage build and distroless runtime to minimize image size.
+
+Example Dockerfile (Go service):
+
+```dockerfile
+# stage: builder
+FROM golang:1.20-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-s -w" -o /out/app ./cmd/app
+
+# stage: runtime
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /out/app /app
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app"]
+```
+
+Build and push (example):
+
+```bash
+# build
+docker build -t <dockerhub_user>/task-service:1.0.0 -f task-service/Dockerfile ./task-service
+# push
+docker push <dockerhub_user>/task-service:1.0.0
+```
+
+Repeat for all 5 services: task-service, user-service, notification-service, analytics-service, api-gateway.
 
 Notes:
-- Manifests in `k8s/` now reference images under `shimulmahmud/`. If you want a different registry, update the image fields accordingly.
-- `imagePullPolicy: Always` is used for `:latest` images to force fresh pulls in clusters.
+- Use `-ldflags "-s -w"` to strip symbol information.
+- Use non-root runtime images (distroless/scratch) to reduce attack surface.
+- Make repositories public on Docker Hub so they are pullable without credentials.
 
 ---
 
-## Deploy to Kubernetes (step-by-step)
+## Task 3 — Kubernetes manifests and deployment
 
-1) Create the namespace:
+The following examples implement the constraints you requested. Add them to `k8s/` or adjust existing manifests.
 
-```pwsh
-kubectl apply -f k8s/namespace.yaml
+1) Namespace and ServiceAccount
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: todo-app
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: todo-app-sa
+  namespace: todo-app
 ```
 
-2) Create MongoDB secrets and storage, then deploy MongoDB:
+2) Secrets: MongoDB credentials
 
-We store a pre-built MongoDB connection URI in `k8s/mongodb-secret.yaml` under the `uri` key (base64). If you need to regenerate the base64-encoded URI locally (Windows PowerShell), run:
-
-```pwsh
-$username = 'admin'       # replace if different
-$password = 'password123' # replace with your password
-$uri = "mongodb://$username:$password@mongodb:27017/todo_app?authSource=admin"
-[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($uri))
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: todo-app
+type: Opaque
+stringData:
+  username: admin
+  password: password123
 ```
 
-Copy the resulting base64 string into `k8s/mongodb-secret.yaml` under `data.uri` (or update the file programmatically). Then apply:
+3) PVC for application storage (2Gi)
 
-```pwsh
-kubectl apply -f k8s/mongodb-secret.yaml
-kubectl apply -f k8s/mongodb-pv-pvc.yaml
-kubectl apply -f k8s/mongodb-deployment.yaml
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-storage-pvc
+  namespace: todo-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard
 ```
 
-3) Ensure nodes and taints (one-time cluster prep)
+4) MongoDB StatefulSet + headless Service (2Gi per replica)
 
-The manifests assume pods will run on two nodes (node1, node2) and use a taint/key `app=todo:NoSchedule`. Label and taint nodes accordingly if you want to restrict scheduling:
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: todo-app
+spec:
+  clusterIP: None
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
++      name: mongodb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: todo-app
+spec:
+  serviceName: mongodb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:5.0
+          ports:
+            - containerPort: 27017
+              name: mongodb
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: password
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: standard
+```
 
-```pwsh
-# label nodes (run on control plane)
-kubectl label node <node1> kubernetes.io/hostname=node1
-kubectl label node <node2> kubernetes.io/hostname=node2
+5) Taint nodes (example):
 
-# add taint to nodes you want to reserve
+```bash
+# mark two nodes with a taint so only tolerating pods can run there
 kubectl taint nodes <node1> app=todo:NoSchedule
 kubectl taint nodes <node2> app=todo:NoSchedule
 ```
 
-The pods include tolerations so they can still be scheduled onto tainted nodes.
+6) App Deployment (task-service) — includes Envoy sidecar, toleration, podAntiAffinity, and resource requests/limits
 
-4) Deploy Envoy config (ConfigMap) and microservices
-
-This repo includes a small `app-config` ConfigMap (`k8s/app-config.yaml`) containing backend addresses which the `api-gateway` Deployment consumes. The app deployments read `MONGO_URI` directly from `k8s/mongodb-secret.yaml` (`data.uri`).
-
-```pwsh
-kubectl apply -f k8s/envoy-configmap.yaml
-kubectl apply -f k8s/app-config.yaml
-kubectl apply -f k8s/task-service.yaml
-kubectl apply -f k8s/user-service.yaml
-kubectl apply -f k8s/notification-service.yaml
-kubectl apply -f k8s/analytics-service.yaml
-kubectl apply -f k8s/api-gateway.yaml
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-service
+  namespace: todo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: task-service
+  template:
+    metadata:
+      labels:
+        app: task-service
+    spec:
+      serviceAccountName: todo-app-sa
+      tolerations:
+        - key: "app"
+          operator: "Equal"
+          value: "todo"
+          effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: task-service
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: task-service
+          image: <dockerhub_user>/task-service:1.0.0
+          ports:
+            - containerPort: 50051
+              name: grpc
+          env:
+            - name: MONGO_HOST
+              value: "mongodb-0.mongodb.todo-app.svc.cluster.local:27017"
+            - name: MONGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: username
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: password
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        - name: envoy
+          image: envoyproxy/envoy:v1.22.0
+          ports:
+            - containerPort: 9901
+              name: admin
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
 ```
 
-5) Deploy observability stack
+7) Service for task-service
 
-```pwsh
-kubectl apply -f k8s/monitoring/grafana-prometheus.yaml
-kubectl apply -f k8s/monitoring/grafana-loki.yaml
-kubectl apply -f k8s/monitoring/grafana-tempo.yaml
-kubectl apply -f k8s/monitoring/prometheus-rules.yaml   # optional; requires Prometheus Operator
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: task-service
+  namespace: todo-app
+spec:
+  selector:
+    app: task-service
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+  type: ClusterIP
 ```
 
-6) Verify basic health
+8) Fixed scaling is implemented by `replicas: 2` in each Deployment. Pod anti-affinity forces scheduling across nodes where possible.
 
-```pwsh
-kubectl get pods -n todo-app
-kubectl get pvc -n todo-app
-kubectl get svc -n todo-app
+---
+
+## Task 4 — Logging, APM, retention and monitoring
+
+1) Install observability stack (script in repo `k8s/monitoring-logging/scripts.sh`) or manually via Helm:
+
+```bash
+# from repo
+cd k8s/monitoring-logging
+chmod +x scripts.sh
+./scripts.sh
 ```
 
-7) Smoke test the API gateway
+This installs kube-prometheus-stack, Loki, Promtail, and Tempo with the repo values files.
 
-If your API Gateway Service is a LoadBalancer or NodePort, call the health endpoint:
+2) Loki & Tempo retention (set to 48h)
 
-```pwsh
-# if LoadBalancer
-curl http://<external-ip-or-dns>/health
-# or if nodeport (example):
-kubectl get svc -n todo-app api-gateway -o yaml
-curl http://<node-ip>:<nodeport>/health
+Example Loki values snippet (values.yaml):
+
+```yaml
+loki:
+  config:
+    table_manager:
+      retention_deletes_enabled: true
+    limits_config:
+      retention_period: 48h
+persistence:
+  enabled: true
+  size: 10Gi
+```
+
+Tempo values snippet:
+
+```yaml
+compactor:
+  retention: 48h
+persistence:
+  enabled: true
+  size: 10Gi
+```
+
+3) Reduce storage usage
+
+- Sample logs at the application or promtail level.
+- Reduce log verbosity for production (e.g. avoid debug in high-throughput components).
+- Set alerts for PVC usage to prevent full disks.
+
+4) Prometheus & Grafana alerts: example PrometheusRule for high memory usage
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: node.rules
++    rules:
++    - alert: NodeMemoryHigh
++      expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.85
++      for: 5m
++      labels:
++        severity: warning
++      annotations:
++        summary: "Node memory usage > 85%"
++        description: "Node memory used is >85% for more than 5 minutes"
+```
+
+5) Visualize metrics in Grafana
+
+- Port-forward Grafana and open http://localhost:3000
+
+```bash
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 ```
 
 ---
 
-## Logs, Traces and Retention
+## Verification checklist
 
-- Loki is configured to retain logs for 48 hours (2 days). The config lives in `k8s/monitoring/grafana-loki.yaml` and stores data to `loki-pvc`.
-- Tempo compactor is configured to retain traces for 48 hours.
-- Make sure PVCs used by Loki and Tempo are large enough for your expected ingestion to avoid data loss.
-
-To inspect logs via Grafana (Loki datasource):
-
-1. Open Grafana UI (NodePort/LoadBalancer) and go to Explore → Loki
-2. Run a query such as `{app="task-service"}`
+- `kubectl get nodes`
+- `kubectl get pods -n todo-app`
+- `kubectl get pvc -n todo-app`
+- Grafana: http://localhost:3000 (port-forward)
+- Loki/Tempo: port-forward and query logs/traces
 
 ---
 
-## Monitoring & Alerts
+## Next steps I can implement for you
 
-- Prometheus scrapes pods and nodes (configured in `k8s/monitoring/grafana-prometheus.yaml`).
-- A small set of alert rules (NodeNotReady, HighCPUUsage, PodCrashLooping) is included under `k8s/monitoring/prometheus-rules.yaml`. These require the Prometheus Operator CRDs to be installed.
-- Grafana is provisioned with datasources for Prometheus, Loki, and Tempo in the manifests.
+- Generate full per-service Kubernetes manifests (task/user/notification/analytics/api-gateway) using the above patterns
+- Create Helm charts or Kustomize overlays for dev/stage/prod
+- Run the monitoring stack in the kind cluster and provision sample dashboards
 
----
-
-## Dockerfile compatibility notes
-
-- All service Dockerfiles use `CGO_ENABLED=0 GOOS=linux` and build static binaries suitable for distroless images.
-- Runtime images use `gcr.io/distroless/static:nonroot` and switch to a non-root user; this matches the pod securityContext `runAsNonRoot: true` in the manifests.
-- Each Dockerfile exposes the ports the corresponding manifest expects and provides default `PORT`/`MONGO_URI` environment variables that manifests override from secrets when deployed.
-- Recommendation (optional): change `api-gateway/Dockerfile` to use `CMD ["/api-gateway"]` instead of `CMD ["./api-gateway"]` to be explicit about the binary path.
-
----
-
-## Troubleshooting
-
-- If pods are Pending: check node labels and taints, and ensure PVC is bound.
-- If images fail to pull: confirm image names/tags, registry accessibility, or add `imagePullSecrets`.
-- If Envoy/gRPC traffic fails: ensure Envoy sidecar is present in the same pod and the Envoy config matches the service ports.
-
----
-
-## Next steps / optional improvements
-
-- Replace `:latest` tags with fixed semantic versions for reproducible deployments.
-- Add PodDisruptionBudgets and (optionally) HPAs for better availability.
-- Add more Prometheus alert rules and Grafana dashboards tailored to your SLAs.
-
-If you want, I can:
-- Update the `api-gateway/Dockerfile` to use the absolute binary path.
-- Deploy the manifests to a local `kind` cluster and run an end-to-end smoke test.
-
----
-
-Happy to update anything else — tell me which next step you want me to take.
+Tell me which you'd like me to do next.

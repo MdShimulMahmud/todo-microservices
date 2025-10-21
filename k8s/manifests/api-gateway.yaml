@@ -1,8 +1,12 @@
+# API Gateway
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-gateway
   namespace: todo-app
+  labels:
+    app: api-gateway
+    component: gateway
 spec:
   replicas: 2
   selector:
@@ -12,12 +16,17 @@ spec:
     metadata:
       labels:
         app: api-gateway
+        component: gateway
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
-      serviceAccountName: todo-app-sa
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -25,12 +34,20 @@ spec:
               matchLabels:
                 app: api-gateway
             topologyKey: "kubernetes.io/hostname"
+      tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "todo"
+        effect: "NoSchedule"
       containers:
       - name: api-gateway
         image: shimulmahmud/api-gateway:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
         env:
         - name: PORT
           value: "8080"
@@ -54,6 +71,49 @@ spec:
             configMapKeyRef:
               name: app-config
               key: ANALYTICS_SERVICE_ADDR
+        
+        # Logging
+        - name: LOG_LEVEL
+          value: "info"
+        - name: LOG_FORMAT
+          value: "json"
+        
+        # Tracing
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo-distributor.logging:4317"
+        - name: OTEL_SERVICE_NAME
+          value: "api-gateway"
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_traceidratio"
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: "1.0"  # Sample 100% of gateway traces
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.namespace=todo-app,service.version=v1,service.instance.id=$(POD_NAME)"
+        
+        # Metrics
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: METRICS_PORT
+          value: "9090"
+        
+        # Pod metadata
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
         resources:
           limits:
             cpu: "0.5"
@@ -61,6 +121,7 @@ spec:
           requests:
             cpu: "0.2"
             memory: "256Mi"
+        
         livenessProbe:
           httpGet:
             path: /health
@@ -68,6 +129,7 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 20
           timeoutSeconds: 5
+        
         readinessProbe:
           httpGet:
             path: /health
@@ -75,21 +137,24 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
-        tolerations:
-        - key: "app"
-          operator: "Equal"
-          value: "todo"
-          effect: "NoSchedule"
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: api-gateway
   namespace: todo-app
+  labels:
+    app: api-gateway
 spec:
   selector:
     app: api-gateway
   ports:
-  - port: 80
+  - name: http
+    port: 80
     targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
   type: LoadBalancer
+

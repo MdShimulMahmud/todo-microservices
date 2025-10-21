@@ -1,0 +1,149 @@
+# kubernetes-alerts.yaml
+# Custom PrometheusRule for Kubernetes cluster monitoring
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-cluster-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: kubernetes.cluster
+      interval: 30s
+      rules:
+        # Node alerts
+        - alert: NodeMemoryPressure
+          expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node {{ $labels.node }} has memory pressure"
+            description: "Node {{ $labels.node }} is experiencing memory pressure and may start evicting pods."
+        
+        - alert: NodeDiskPressure
+          expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node {{ $labels.node }} has disk pressure"
+            description: "Node {{ $labels.node }} is experiencing disk pressure."
+        
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node {{ $labels.node }} is not ready"
+            description: "Node {{ $labels.node }} has been unready for more than 5 minutes."
+        
+        - alert: HighNodeCPU
+          expr: (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU usage on node {{ $labels.instance }}"
+            description: "CPU usage on node {{ $labels.instance }} is above 80% (current: {{ $value }}%)"
+        
+        - alert: HighNodeMemory
+          expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage on node {{ $labels.instance }}"
+            description: "Memory usage on node {{ $labels.instance }} is above 85% (current: {{ $value }}%)"
+        
+        # Pod alerts
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes."
+        
+        - alert: PodNotReady
+          expr: sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown"}) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been in a non-ready state for more than 15 minutes."
+        
+        - alert: HighPodMemory
+          expr: sum by (pod, namespace) (container_memory_working_set_bytes{container!=""}) / sum by (pod, namespace) (container_spec_memory_limit_bytes{container!=""}) * 100 > 90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage for pod {{ $labels.namespace }}/{{ $labels.pod }}"
+            description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is using more than 90% of its memory limit (current: {{ $value }}%)"
+        
+        # Deployment alerts
+        - alert: DeploymentReplicasMismatch
+          expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has mismatched replicas"
+            description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has not matched the expected number of replicas for more than 10 minutes."
+        
+        # Storage alerts
+        - alert: PersistentVolumeFillingUp
+          expr: (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) * 100 < 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PersistentVolume is filling up"
+            description: "PersistentVolume {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is {{ $value }}% full."
+        
+        # API Server alerts
+        - alert: KubernetesAPIServerErrors
+          expr: sum(rate(apiserver_request_total{code=~"5.."}[5m])) / sum(rate(apiserver_request_total[5m])) * 100 > 5
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kubernetes API server error rate is high"
+            description: "Kubernetes API server is returning {{ $value }}% errors."
+        
+        # Etcd alerts
+        - alert: EtcdHighNumberOfFailedProposals
+          expr: rate(etcd_server_proposals_failed_total[15m]) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Etcd has high number of failed proposals"
+            description: "Etcd has {{ $value }} proposal failures within the last 15 minutes."
+        
+        # Container alerts
+        - alert: ContainerKilled
+          expr: time() - container_last_seen > 60
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Container killed in pod {{ $labels.namespace }}/{{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was killed."
+        
+        # Log volume alerts
+        - alert: HighLogIngestionRate
+          expr: sum(rate(loki_distributor_bytes_received_total[5m])) > 10485760  # 10MB/s
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High log ingestion rate detected"
+            description: "Loki is receiving logs at {{ $value | humanize }}B/s, which may cause storage issues."

@@ -1,0 +1,141 @@
+# Analytics Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  namespace: todo-app
+  labels:
+    app: analytics-service
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+        component: backend
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: analytics-service
+            topologyKey: "kubernetes.io/hostname"
+      tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "todo"
+        effect: "NoSchedule"
+      containers:
+      - name: analytics-service
+        image: shimulmahmud/analytics-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 50054
+          name: grpc
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: MONGO_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: MONGO_HOST
+        - name: MONGO_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: username
+        - name: MONGO_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: password
+        - name: MONGO_URI
+          value: "mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${MONGO_HOST}/todo_app?authSource=admin"
+        - name: PORT
+          value: "50054"
+        
+        # Logging
+        - name: LOG_LEVEL
+          value: "info"
+        - name: LOG_FORMAT
+          value: "json"
+        
+        # Tracing
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo-distributor.logging:4317"
+        - name: OTEL_SERVICE_NAME
+          value: "analytics-service"
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_traceidratio"
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: "0.5"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.namespace=todo-app,service.version=v1,service.instance.id=$(POD_NAME)"
+        
+        # Metrics
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: METRICS_PORT
+          value: "9090"
+        
+        # Pod metadata
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        resources:
+          limits:
+            cpu: "0.5"
+            memory: "512Mi"
+          requests:
+            cpu: "0.2"
+            memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  namespace: todo-app
+  labels:
+    app: analytics-service
+spec:
+  selector:
+    app: analytics-service
+  ports:
+  - name: grpc
+    port: 50054
+    targetPort: 50054
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+

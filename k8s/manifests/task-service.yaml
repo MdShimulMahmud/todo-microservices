@@ -1,8 +1,12 @@
+# Task Service
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: task-service
   namespace: todo-app
+  labels:
+    app: task-service
+    component: backend
 spec:
   replicas: 2
   selector:
@@ -12,15 +16,18 @@ spec:
     metadata:
       labels:
         app: task-service
+        component: backend
+        version: v1
       annotations:
+        # Prometheus metrics scraping
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
-      serviceAccountName: todo-app-sa
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -42,6 +49,7 @@ spec:
         imagePullPolicy: Always
         ports:
         - containerPort: 50051
+          name: grpc
         resources:
           requests:
             cpu: 150m
@@ -50,40 +58,89 @@ spec:
             cpu: 400m
             memory: 384Mi
         env:
-        - name: MONGODB_USERNAME
+        # Application config
+        - name: MONGO_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: MONGO_HOST
+        - name: MONGO_USERNAME
           valueFrom:
             secretKeyRef:
               name: mongodb-secret
               key: username
-        - name: MONGODB_PASSWORD
+        - name: MONGO_PASSWORD
           valueFrom:
             secretKeyRef:
               name: mongodb-secret
               key: password
         - name: MONGO_URI
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-secret
-              key: uri
+          value: "mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${MONGO_HOST}/todo_app?authSource=admin"
         - name: PORT
           value: "50051"
+        
+        # Logging configuration
+        - name: LOG_LEVEL
+          value: "info"
+        - name: LOG_FORMAT
+          value: "json"
+        
+        # OpenTelemetry/Tracing configuration
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo-distributor.logging:4317"
+        - name: OTEL_SERVICE_NAME
+          value: "task-service"
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_traceidratio"
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: "0.5"  # Sample 50% of traces
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.namespace=todo-app,service.version=v1,service.instance.id=$(POD_NAME)"
+        
+        # Prometheus metrics
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: METRICS_PORT
+          value: "9090"
+        
+        # Pod metadata for correlation
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
         volumeMounts:
         - name: config-volume
           mountPath: /app/config
         - name: app-storage
           mountPath: /data
+        
         livenessProbe:
-          tcpSocket:
-            port: 50051
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:50051"]
           initialDelaySeconds: 15
           periodSeconds: 20
           timeoutSeconds: 5
+        
         readinessProbe:
-          tcpSocket:
-            port: 50051
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:50051"]
           initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
+      
       - name: envoy
         image: envoyproxy/envoy:v1.22.0
         imagePullPolicy: Always
@@ -92,6 +149,8 @@ spec:
           name: admin
         - containerPort: 8080
           name: http
+        - containerPort: 9102
+          name: metrics
         resources:
           requests:
             cpu: 50m
@@ -99,25 +158,13 @@ spec:
           limits:
             cpu: 100m
             memory: 128Mi
+        env:
+        - name: ENVOY_LOG_LEVEL
+          value: "info"
         volumeMounts:
         - name: envoy-config
           mountPath: /etc/envoy
-        livenessProbe:
-          httpGet:
-            scheme: HTTP
-            path: "/ready"
-            port: 9901
-          initialDelaySeconds: 10
-          periodSeconds: 20
-          timeoutSeconds: 5
-        readinessProbe:
-          httpGet:
-            scheme: HTTP
-            path: "/ready"
-            port: 9901
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 3
+      
       volumes:
       - name: config-volume
         emptyDir: {}
@@ -127,12 +174,15 @@ spec:
       - name: app-storage
         persistentVolumeClaim:
           claimName: app-storage-pvc
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: task-service
   namespace: todo-app
+  labels:
+    app: task-service
 spec:
   selector:
     app: task-service
@@ -143,4 +193,8 @@ spec:
   - name: http
     port: 8080
     targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
   type: ClusterIP
+

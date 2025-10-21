@@ -1,0 +1,84 @@
+# ServiceMonitor for Task Service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: task-service
+  namespace: todo-app
+  labels:
+    app: task-service
+spec:
+  selector:
+    matchLabels:
+      app: task-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+  - port: metrics
+    path: /stats/prometheus
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: user-service
+  namespace: todo-app
+  labels:
+    app: user-service
+spec:
+  selector:
+    matchLabels:
+      app: user-service
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: notification-service
+  namespace: todo-app
+  labels:
+    app: notification-service
+spec:
+  selector:
+    matchLabels:
+      app: notification-service
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: analytics-service
+  namespace: todo-app
+  labels:
+    app: analytics-service
+spec:
+  selector:
+    matchLabels:
+      app: analytics-service
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway
+  namespace: todo-app
+  labels:
+    app: api-gateway
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s  # More frequent for gateway
