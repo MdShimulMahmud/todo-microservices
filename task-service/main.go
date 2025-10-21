@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -203,11 +204,18 @@ func (s *server) ListTasks(ctx context.Context, req *pb.ListTasksRequest) (*pb.L
 
 func main() {
 	// Get MongoDB connection string from environment variable
-	mongoURI := os.Getenv("MONGO_URI")
-	if mongoURI == "" {
-		mongoURI = "mongodb://localhost:27017"
+	// Read the environment variables
+	// Read the environment variables
+	mongoUser := os.Getenv("MONGO_USERNAME")
+	mongoPass := os.Getenv("MONGO_PASSWORD")
+	mongoHost := os.Getenv("MONGO_HOST")
+	if mongoUser == "" || mongoPass == "" || mongoHost == "" {
+		log.Fatal("Error: MONGO_USERNAME, MONGO_PASSWORD, and MONGO_HOST must be set")
 	}
+	// Build the connection string
+	mongoURI := fmt.Sprintf("mongodb://%s:%s@%s/todo_app?authSource=admin", mongoUser, mongoPass, mongoHost)
 
+	log.Printf("Connecting to MongoDB at %s...", mongoHost)
 	// Connect to MongoDB
 	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURI))
 	if err != nil {

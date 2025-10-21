@@ -8,7 +8,7 @@ metadata:
     app: api-gateway
     component: gateway
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: api-gateway
@@ -71,13 +71,13 @@ spec:
             configMapKeyRef:
               name: app-config
               key: ANALYTICS_SERVICE_ADDR
-        
+
         # Logging
         - name: LOG_LEVEL
           value: "info"
         - name: LOG_FORMAT
           value: "json"
-        
+
         # Tracing
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://tempo-distributor.logging:4317"
@@ -86,16 +86,16 @@ spec:
         - name: OTEL_TRACES_SAMPLER
           value: "parentbased_traceidratio"
         - name: OTEL_TRACES_SAMPLER_ARG
-          value: "1.0"  # Sample 100% of gateway traces
+          value: "1.0"
         - name: OTEL_RESOURCE_ATTRIBUTES
           value: "service.namespace=todo-app,service.version=v1,service.instance.id=$(POD_NAME)"
-        
+
         # Metrics
         - name: METRICS_ENABLED
           value: "true"
         - name: METRICS_PORT
           value: "9090"
-        
+
         # Pod metadata
         - name: POD_NAME
           valueFrom:
@@ -113,7 +113,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        
+
         resources:
           limits:
             cpu: "0.5"
@@ -121,7 +121,7 @@ spec:
           requests:
             cpu: "0.2"
             memory: "256Mi"
-        
+
         livenessProbe:
           httpGet:
             path: /health
@@ -129,7 +129,7 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 20
           timeoutSeconds: 5
-        
+
         readinessProbe:
           httpGet:
             path: /health
@@ -157,4 +157,3 @@ spec:
     port: 9090
     targetPort: 9090
   type: LoadBalancer
-

@@ -36,8 +36,11 @@ Create the cluster:
 kind create cluster --config kind-cluster.yaml --name todo-cluster
 kubectl cluster-info --context kind-todo-cluster
 ```
+You can provision your cluster on any cloud provider as needed or use virtual machines with kubeadm.
 
-3) Provision storage (local-path provisioner recommended for kind):
+Follow the instructions described in here : [https://github.com/MdShimulMahmud/ansible-k8s](https://github.com/MdShimulMahmud/ansible-k8s)
+
+1) Provision storage (local-path provisioner recommended for kind):
 
 ```bash
 helm repo add rancher-local-path https://rancher.github.io/local-path-provisioner
@@ -78,13 +81,13 @@ EXPOSE 8080
 ENTRYPOINT ["/app"]
 ```
 
-Build and push (example):
+Build and push (Repeat for all services):
 
 ```bash
 # build
-docker build -t <dockerhub_user>/task-service:1.0.0 -f task-service/Dockerfile ./task-service
+docker build -t shimulmahmud/task-service:1.0.0 -f task-service/Dockerfile ./task-service
 # push
-docker push <dockerhub_user>/task-service:1.0.0
+docker push shimulmahmud/task-service:1.0.0
 ```
 
 Repeat for all 5 services: task-service, user-service, notification-service, analytics-service, api-gateway.
@@ -125,8 +128,8 @@ metadata:
   namespace: todo-app
 type: Opaque
 stringData:
-  username: admin
-  password: password123
+  username: admin # use base64 encoding in production
+  password: password123 # use base64 encoding in production
 ```
 
 3) PVC for application storage (2Gi)
@@ -251,7 +254,7 @@ spec:
               topologyKey: "kubernetes.io/hostname"
       containers:
         - name: task-service
-          image: <dockerhub_user>/task-service:1.0.0
+          image: shimulmahmud/task-service:1.0.0
           ports:
             - containerPort: 50051
               name: grpc
@@ -398,12 +401,3 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 - Grafana: http://localhost:3000 (port-forward)
 - Loki/Tempo: port-forward and query logs/traces
 
----
-
-## Next steps I can implement for you
-
-- Generate full per-service Kubernetes manifests (task/user/notification/analytics/api-gateway) using the above patterns
-- Create Helm charts or Kustomize overlays for dev/stage/prod
-- Run the monitoring stack in the kind cluster and provision sample dashboards
-
-Tell me which you'd like me to do next.

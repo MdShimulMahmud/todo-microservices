@@ -1,55 +1,69 @@
-
-# Notification Service
+# Task Service
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: notification-service
+  name: task-service
   namespace: todo-app
   labels:
-    app: notification-service
+    app: task-service
     component: backend
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: notification-service
+      app: task-service
   template:
     metadata:
       labels:
-        app: notification-service
+        app: task-service
         component: backend
         version: v1
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9090"
+        prometheus.io/port: "8080" # Pointing scrape to Envoy
         prometheus.io/path: "/metrics"
     spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+
       affinity:
-        podAntiAffinity:
+        nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app: notification-service
-            topologyKey: "kubernetes.io/hostname"
-      tolerations:
-      - key: "app"
-        operator: "Equal"
-        value: "todo"
-        effect: "NoSchedule"
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role
+                operator: In
+                values:
+                - worker
+      
+      # --- FIX #2: REMOVED the unnecessary toleration ---
+      # The nodeAffinity above correctly handles scheduling.
+
       containers:
-      - name: notification-service
-        image: shimulmahmud/notification-service:latest
+      - name: task-service
+        image: shimulmahmud/task-service:latest
         imagePullPolicy: Always
+
+        # --- FIX #1: REMOVED the incompatible command block ---
+        # Your distroless image has no shell. The updated Go application
+        # now builds the MongoDB connection string internally.
+
         ports:
-        - containerPort: 50053
+        - containerPort: 50051
           name: grpc
         - containerPort: 9090
           name: metrics
+        resources:
+          requests:
+            cpu: 150m
+            memory: 192Mi
+          limits:
+            cpu: 400m
+            memory: 384Mi
         env:
+        # Your Go app will read these three variables
         - name: MONGO_HOST
           valueFrom:
             configMapKeyRef:
@@ -65,36 +79,26 @@ spec:
             secretKeyRef:
               name: mongodb-secret
               key: password
-        - name: MONGO_URI
-          value: "mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${MONGO_HOST}/todo_app?authSource=admin"
         - name: PORT
-          value: "50053"
-        
-        # Logging
+          value: "50051"
         - name: LOG_LEVEL
           value: "info"
         - name: LOG_FORMAT
           value: "json"
-        
-        # Tracing
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://tempo-distributor.logging:4317"
         - name: OTEL_SERVICE_NAME
-          value: "notification-service"
+          value: "task-service"
         - name: OTEL_TRACES_SAMPLER
           value: "parentbased_traceidratio"
         - name: OTEL_TRACES_SAMPLER_ARG
           value: "0.5"
         - name: OTEL_RESOURCE_ATTRIBUTES
           value: "service.namespace=todo-app,service.version=v1,service.instance.id=$(POD_NAME)"
-        
-        # Metrics
         - name: METRICS_ENABLED
           value: "true"
         - name: METRICS_PORT
           value: "9090"
-        
-        # Pod metadata
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -111,25 +115,34 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+        - name: app-storage
+          mountPath: /data
+
+        livenessProbe:
+          tcpSocket:
+            port: grpc # This targets the container's 'grpc' port (50051)
+          initialDelaySeconds: 15
+          periodSeconds: 20
         
-        resources:
-          limits:
-            cpu: "0.5"
-            memory: "512Mi"
-          requests:
-            cpu: "0.2"
-            memory: "256Mi"
-      
+        readinessProbe:
+          tcpSocket:
+            port: grpc # This targets the container's 'grpc' port (50051)
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          
       - name: envoy
         image: envoyproxy/envoy:v1.22.0
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 9901
           name: admin
         - containerPort: 8080
           name: http
         - containerPort: 9102
-          name: metrics
+          name: envoy-metrics
         resources:
           requests:
             cpu: 50m
@@ -137,14 +150,16 @@ spec:
           limits:
             cpu: 100m
             memory: 128Mi
+        env:
+        - name: ENVOY_LOG_LEVEL
+          value: "info"
         volumeMounts:
         - name: envoy-config
           mountPath: /etc/envoy
-      
-      nodeSelector:
-        kubernetes.io/role: worker
-      
+          
       volumes:
+      - name: config-volume
+        emptyDir: {}
       - name: envoy-config
         configMap:
           name: envoy-config
@@ -156,17 +171,20 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: notification-service
+  name: task-service
   namespace: todo-app
   labels:
-    app: notification-service
+    app: task-service
 spec:
   selector:
-    app: notification-service
+    app: task-service
   ports:
   - name: grpc
-    port: 50053
-    targetPort: 50053
+    port: 50051
+    targetPort: 50051
+  - name: http
+    port: 8080
+    targetPort: 8080
   - name: metrics
     port: 9090
     targetPort: 9090
