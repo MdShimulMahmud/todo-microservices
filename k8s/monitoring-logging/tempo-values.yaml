@@ -1,83 +1,16 @@
 # tempo-values.yaml
-# Grafana Tempo configuration for distributed tracing
+# tempo: # This top-level key might not be needed depending on chart version
+# It's common for Tempo values to start directly with components like 'compactor'
 
-tempo:
-  storage:
-    trace:
-      backend: local
-      local:
-        path: /var/tempo/traces
-      wal:
-        path: /var/tempo/wal
-  
-  receivers:
-    jaeger:
-      protocols:
-        thrift_http:
-          endpoint: 0.0.0.0:14268
-        grpc:
-          endpoint: 0.0.0.0:14250
-        thrift_binary:
-          endpoint: 0.0.0.0:6832
-        thrift_compact:
-          endpoint: 0.0.0.0:6831
-    zipkin:
-      endpoint: 0.0.0.0:9411
-    otlp:
-      protocols:
-        http:
-          endpoint: 0.0.0.0:4318
-        grpc:
-          endpoint: 0.0.0.0:4317
-    opencensus:
-      endpoint: 0.0.0.0:55678
-  
-  retention: 48h  # 2 days retention
-
-  metricsGenerator:
-    enabled: true
-    remoteWriteUrl: "http://prometheus-server.monitoring:80/api/v1/write"
-
-persistence:
-  enabled: true
-  size: 10Gi
-
-serviceMonitor:
-  enabled: true
-
-resources:
-  limits:
-    cpu: 1
-    memory: 2Gi
-  requests:
-    cpu: 500m
-    memory: 1Gi
-
-# Gateway configuration
-gateway:
-  enabled: true
-  service:
-    type: ClusterIP
-
-# Ingester configuration
-ingester:
-  replicas: 1
-
-# Distributor configuration
-distributor:
-  replicas: 1
-
-# Compactor configuration
 compactor:
-  replicas: 1
-  config:
-    compaction:
-      block_retention: 48h  # 2 days retention
+  compaction:
+    # Use this parameter for block retention
+    block_retention: 48h # 2-day retention
 
-# Querier configuration
-querier:
-  replicas: 1
-
-# Query frontend configuration
-queryFrontend:
-  replicas: 1
+# Enable OpenTelemetry receiver endpoints (required for apps to send traces)
+traces:
+  otlp:
+    grpc:
+      enabled: true
+    http:
+      enabled: true

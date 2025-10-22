@@ -18,6 +18,7 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}Creating namespaces...${NC}"
 kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace tracing --dry-run=client -o yaml | kubectl apply -f - # Ensure tracing ns exists
 
 # Add Helm repositories
 echo -e "${YELLOW}Adding Helm repositories...${NC}"
@@ -29,17 +30,17 @@ echo -e "${GREEN}✓ Helm repositories added${NC}"
 
 # Deploy kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
 echo -e "${YELLOW}Deploying kube-prometheus-stack...${NC}"
-helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+helm upgrade --install prom-stack prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --values kube-prometheus-stack-values.yaml \
   --wait \
   --timeout 10m
 
-echo -e "${GREEN}✓ kube-prometheus-stack deployed${NC}"
+echo -e "${GREEN}✓ prom-stack deployed${NC}"
 
 # Deploy Loki
 echo -e "${YELLOW}Deploying Loki...${NC}"
-helm upgrade --install loki grafana/loki \
+helm upgrade --install loki grafana/loki-stack \
   --namespace logging \
   --values loki-values.yaml \
   --wait \
@@ -47,20 +48,12 @@ helm upgrade --install loki grafana/loki \
 
 echo -e "${GREEN}✓ Loki deployed${NC}"
 
-# Deploy Promtail
-echo -e "${YELLOW}Deploying Promtail...${NC}"
-helm upgrade --install promtail grafana/promtail \
-  --namespace logging \
-  --values promtail-values.yaml \
-  --wait \
-  --timeout 10m
-
-echo -e "${GREEN}✓ Promtail deployed${NC}"
 
 # Deploy Tempo
 echo -e "${YELLOW}Deploying Tempo...${NC}"
+# Use upgrade --install and add --wait
 helm upgrade --install tempo grafana/tempo \
-  --namespace logging \
+  --namespace tracing \
   --values tempo-values.yaml \
   --wait \
   --timeout 10m
@@ -69,24 +62,37 @@ echo -e "${GREEN}✓ Tempo deployed${NC}"
 
 # Apply custom alerts
 echo -e "${YELLOW}Applying custom Kubernetes alerts...${NC}"
-kubectl apply -f kubernetes-alerts.yaml
+# Ensure kubernetes-alerts.yaml exists and contains valid PrometheusRule resources
+if [ -f "kubernetes-alerts.yaml" ]; then
+  kubectl apply -f kubernetes-alerts.yaml # Apply alerts to monitoring ns
+  echo -e "${GREEN}✓ Custom alerts applied${NC}"
+else
+  echo -e "${YELLOW}Skipping custom alerts: kubernetes-alerts.yaml not found${NC}"
+fi
 
-echo -e "${GREEN}✓ Custom alerts applied${NC}"
 
-# Apply Grafana dashboard
-echo -e "${YELLOW}Applying Grafana dashboard...${NC}"
-kubectl apply -f grafana-k8s-dashboard.yaml
-
-echo -e "${GREEN}✓ Grafana dashboard applied${NC}"
+# Apply service monitors
+echo -e "${YELLOW}Applying Service Monitor...${NC}"
+# Ensure service-monitor.yaml exists and contains valid ServiceMonitor resources
+if [ -f "service-monitor.yaml" ]; then
+  kubectl apply -f service-monitor.yaml
+  echo -e "${GREEN}✓ Service Monitor applied${NC}"
+else
+  echo -e "${YELLOW}Skipping Service Monitor: service-monitor.yaml not found${NC}"
+fi
 
 # Wait for all pods to be ready
 echo -e "${YELLOW}Waiting for all pods to be ready...${NC}"
 kubectl wait --for=condition=ready pod --all -n monitoring --timeout=300s
 kubectl wait --for=condition=ready pod --all -n logging --timeout=300s
+kubectl wait --for=condition=ready pod --all -n tracing --timeout=300s # Wait for Tempo pods too
 
 echo -e "${GREEN}✓ All pods are ready${NC}"
 
-# Get Grafana password
+# Get Grafana password (or provide instructions)
+GRAFANA_SECRET_NAME=$(kubectl get secret -n monitoring -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
+GRAFANA_PASSWORD=$(kubectl get secret -n monitoring ${GRAFANA_SECRET_NAME} -o jsonpath="{.data.admin-password}" | base64 --decode)
+
 echo ""
 echo "==========================================="
 echo -e "${GREEN}Deployment Complete!${NC}"
@@ -96,34 +102,39 @@ echo "Access Information:"
 echo "-------------------"
 echo ""
 echo "Grafana:"
-echo "  Port-forward: kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+echo "  Port-forward: kubectl port-forward -n monitoring svc/prom-stack-grafana 3000:80"
 echo "  URL: http://localhost:3000"
 echo "  Username: admin"
-echo "  Password: admin (change in production!)"
+# Update password info
+echo "  Password: ${GRAFANA_PASSWORD}"
 echo ""
 echo "Prometheus:"
-echo "  Port-forward: kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+echo "  Port-forward: kubectl port-forward -n monitoring svc/prom-stack-prometheus 9090:9090"
 echo "  URL: http://localhost:9090"
-echo ""`
+echo ""
 echo "Alertmanager:"
-echo "  Port-forward: kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093"
+echo "  Port-forward: kubectl port-forward -n monitoring svc/prom-stack-alertmanager 9093:9093"
 echo "  URL: http://localhost:9093"
 echo ""
 echo "Loki:"
-echo "  Port-forward: kubectl port-forward -n logging svc/loki-gateway 3100:80"
-echo "  URL: http://localhost:3100"
+# Verify service name, loki-stack-gateway is common if release name is loki-stack
+echo "  Port-forward: kubectl port-forward -n logging svc/loki-stack-gateway 3100:80"
+echo "  URL: http://localhost:3100 (For Grafana Datasource: http://loki-stack-gateway.logging.svc.cluster.local:80 or check svc)"
 echo ""
 echo "Tempo:"
-echo "  Port-forward: kubectl port-forward -n logging svc/tempo-gateway 3200:80"
-echo "  URL: http://localhost:3200"
+# Update namespace and likely service name/port
+echo "  Port-forward: kubectl port-forward -n tracing svc/tempo 3200:3200" # Use correct service and port 3200
+echo "  URL: http://localhost:3200 (For Grafana Datasource: http://tempo.tracing.svc.cluster.local:3200)"
 echo ""
-echo "Pre-configured datasources in Grafana:"
-echo "  - Prometheus (metrics)"
-echo "  - Loki (logs)"
-echo "  - Tempo (traces)"
+# Update datasource info
+echo "Data Sources in Grafana:"
+echo "  - Prometheus (metrics) - Should be auto-configured by the chart."
+echo "  - Loki (logs) - *Needs manual configuration* (Use URL above)"
+echo "  - Tempo (traces) - *Needs manual configuration* (Use URL above)"
 echo ""
 echo "Log Retention: 2 days (48 hours)"
 echo "Trace Retention: 2 days (48 hours)"
-echo "Metrics Retention: 15 days"
+# Metrics retention depends on Prometheus config, often defaults to 15d
+echo "Metrics Retention: (Check Prometheus config, often 15 days)"
 echo ""
 echo "==========================================="

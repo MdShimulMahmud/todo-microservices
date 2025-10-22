@@ -217,8 +217,8 @@ spec:
 
 ```bash
 # mark two nodes with a taint so only tolerating pods can run there
-kubectl taint nodes <node1> app=todo:NoSchedule
-kubectl taint nodes <node2> app=todo:NoSchedule
+kubectl label node todo-cluster-worker node-role=worker
+kubectl label node todo-cluster-worker2 node-role=worker
 ```
 
 6) App Deployment (task-service) — includes Envoy sidecar, toleration, podAntiAffinity, and resource requests/limits
